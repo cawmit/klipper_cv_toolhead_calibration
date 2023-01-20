@@ -1,11 +1,12 @@
 #!/bin/bash
 
 KLIPPER_PATH="${HOME}/klipper"
+EXTENSION_PATH="${HOME}/klipper_cv_toolhead_calibration"
 
 link_extension()
 {
     echo "Linking extension to Klipper..."
-    ln -sf "${SRCDIR}/cv_toolhead_calibration.py" "${KLIPPER_PATH}/klippy/extras/cv_toolhead_calibration.py"
+    ln -sf "${EXTENSION_PATH}/cv_toolhead_calibration.py" "${KLIPPER_PATH}/klippy/extras/cv_toolhead_calibration.py"
 }
 
 verify_opencv_installed()
@@ -29,9 +30,6 @@ verify_ready()
 
 # Force script to exit if an error occurs
 set -e
-
-# Find SRCDIR from the pathname of this script
-SRCDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )"/ && pwd )"
 
 # Parse command line arguments
 while getopts "k:" arg; do
