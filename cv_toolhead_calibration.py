@@ -29,6 +29,8 @@ class CVToolheadCalibration:
         # if self.streamer.can_read_stream(self.printer) is False:
         #     raise self.printer.config_error("Could not read configured stream url %s" % (self.camera_address))
 
+        self.cv_tools = CVTools()
+
         # TODO: Parameterize detector
         self.detector = self._create_detector()
 
@@ -74,19 +76,19 @@ class CVToolheadCalibration:
         positions = self.calibrate_toolhead_movement(skip_center, calib_value, calib_iterations)
 
         # avg_positions would be {(klipper_x_in_mm, klipper_y_in_mm): (cv_pixel_x_in_px, cv_pixel_y_in_px), {...}, ...}
-        avg_points = self._get_average_positions(positions)
+        avg_points = self.cv_tools.get_average_positions(positions)
 
         # Get px/mm from averages
-        px_mm = self._calculate_px_to_mm(avg_points)
+        px_mm = self.cv_tools.calculate_px_to_mm(avg_points, self.camera_position)
 
-        left_point = self._get_edge_point(positions, 'left')
-        bottom_point = self._get_edge_point(positions, 'bottom')
+        left_point = self.cv_tools.get_edge_point(positions, 'left')
+        bottom_point = self.cv_tools.get_edge_point(positions, 'bottom')
 
         center_point = self.camera_position
-        x_rads_desired = self._angle(left_point, center_point)
-        x_rads = self._angle(avg_points[left_point], avg_points[center_point])
-        y_rads_desired = self._angle(bottom_point, center_point)
-        y_rads = self._angle(avg_points[bottom_point], avg_points[center_point])
+        x_rads_desired = self.cv_tools.angle(left_point, center_point)
+        x_rads = self.cv_tools.angle(avg_points[left_point], avg_points[center_point])
+        y_rads_desired = self.cv_tools.angle(bottom_point, center_point)
+        y_rads = self.cv_tools.angle(avg_points[bottom_point], avg_points[center_point])
 
         x_rads_calc = (x_rads_desired-x_rads)
         y_rads_calc = (y_rads_desired-y_rads)
@@ -106,7 +108,7 @@ class CVToolheadCalibration:
         #     rads_calc
         # ))
 
-        center_deviation = self._get_center_point_deviation(positions[center_point])
+        center_deviation = self.cv_tools.get_center_point_deviation(positions[center_point])
         gcmd.respond_info("""
             T0 calibration
             Center point: (%.2f,%.2f)
@@ -163,7 +165,7 @@ class CVToolheadCalibration:
         y_offset_mm = y_offset_px/px_mm
 
         # TODO: Simply try to use this same position with px values instead of the current calculated mm values? potentionally reduces chance of error
-        rotated_offsets = self.rotate_around_origin(center_point, [center_point[0]+x_offset_mm, center_point[1]+y_offset_mm], rads_calc)
+        rotated_offsets = self.cv_tools.rotate_around_origin(center_point, [center_point[0]+x_offset_mm, center_point[1]+y_offset_mm], rads_calc)
 
         x_offset_mm_rotated = rotated_offsets[0]-center_point[0]
         y_offset_mm_rotated = rotated_offsets[1]-center_point[1]
@@ -235,22 +237,22 @@ class CVToolheadCalibration:
 
         print_positions = gcmd.get('PRINT_POSITIONS', False)
         if print_positions != False:
-            debug_string = self._positions_dict_to_string(positions)
+            debug_string = self.cv_tools.positions_dict_to_string(positions)
             gcmd.respond_info(debug_string)
 
         # avg_positions would be {(klipper_x_in_mm, klipper_y_in_mm): (cv_pixel_x_in_px, cv_pixel_y_in_px), ...}
-        avg_points = self._get_average_positions(positions)
+        avg_points = self.cv_tools.get_average_positions(positions)
 
-        px_mm = self._calculate_px_to_mm(avg_points)
+        px_mm = self.cv_tools.calculate_px_to_mm(avg_points, self.camera_position)
 
-        center_deviation = self._get_center_point_deviation(positions[self.camera_position])
-        left_point = self._get_edge_point(positions, 'left')
-        right_point = self._get_edge_point(positions, 'right')
-        top_point = self._get_edge_point(positions, 'top')
-        bottom_point = self._get_edge_point(positions, 'bottom')
+        center_deviation = self.cv_tools.get_center_point_deviation(positions[self.camera_position])
+        left_point = self.cv_tools.get_edge_point(positions, 'left')
+        right_point = self.cv_tools.get_edge_point(positions, 'right')
+        top_point = self.cv_tools.get_edge_point(positions, 'top')
+        bottom_point = self.cv_tools.get_edge_point(positions, 'bottom')
 
-        x_rads = self._angle(avg_points[left_point], avg_points[right_point])
-        y_rads = self._angle(avg_points[top_point], avg_points[bottom_point])
+        x_rads = self.cv_tools.angle(avg_points[left_point], avg_points[right_point])
+        y_rads = self.cv_tools.angle(avg_points[top_point], avg_points[bottom_point])
             
         gcmd.respond_info("""
             Calibration results:
@@ -357,7 +359,7 @@ class CVToolheadCalibration:
             toolhead.move(center_pos, self.speed)
             toolhead.wait_moves()
 
-    def _find_nozzle_positions(self): 
+    def _find_nozzle_positions(self):
         image = self.streamer.get_single_frame()
         if image is None:
             return None
@@ -365,13 +367,13 @@ class CVToolheadCalibration:
 
     def _recursively_find_nozzle_position(self):
         start_time = time.time()  # Get the current time
-        
+
         CV_TIME_OUT = 5 # If no nozzle found in this time, timeout the function
         CV_MIN_MATCHES = 5 # Minimum amount of matches to confirm toolhead position after a move
 
-        last_pos = None
+        last_pos = (0,0)
         pos_matches = 0
-        while (time.time() - start_time < CV_TIME_OUT):
+        while time.time() - start_time < CV_TIME_OUT:
             positions = self._find_nozzle_positions()
             if not positions:
                 continue
@@ -420,20 +422,8 @@ class CVToolheadCalibration:
         
         return data
 
-    def _get_center_point_deviation(self, positions): 
-        center_min = np.min(positions, axis=0)
-        center_max = np.max(positions, axis=0)
-        return (center_max[0]-center_min[0], center_max[1]-center_min[1])
-
-    def _positions_dict_to_string(self, dictionary):
-        string = ""
-        for key, value in dictionary.items():
-            string += f"X{key[0]} Y{key[1]}:\n"
-            for val in value:
-                string += f"  X{val[0]} Y{val[1]} r{val[2]}\n"
-        return string
-
-    def _get_average_positions(self, positions):
+class CVTools:
+    def get_average_positions(self, positions):
         avg_positions = {}
         for position in positions:
             mm_positions = positions[position]
@@ -442,41 +432,8 @@ class CVToolheadCalibration:
             avg_positions[position] = averages
         return avg_positions
 
-    def _get_distance(self, p1, p2):
-        return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
-
-    def _get_edge_point(self, positions, edge):
-        points_np = np.array(list(positions.keys()))
-        if edge == 'left':
-            min_x = np.min(points_np[:,0])
-            y_median = np.median(points_np[:,1])
-            return (min_x, y_median)
-        elif edge == 'right':
-            max_x = np.max(points_np[:,0])
-            y_median = np.median(points_np[:,1])
-            return (max_x, y_median)
-        elif edge == 'top':
-            x_median = np.median(points_np[:,0])
-            max_y = np.max(points_np[:,1])
-            return (x_median, max_y)
-        elif edge == 'bottom':
-            x_median = np.median(points_np[:,0])
-            min_y = np.min(points_np[:,1])
-            return (x_median, min_y)
-
-    def _angle(self, a, b):
-      return math.atan2(b[1] - a[1], b[0] - a[0])
-    
-    def rotate_around_origin(self, origin, point, angle):
-        ox, oy = origin
-        px, py = point
-
-        qx = ox + math.cos(angle) * (px - ox) - math.sin(angle) * (py - oy)
-        qy = oy + math.sin(angle) * (px - ox) + math.cos(angle) * (py - oy)
-        return qx, qy
-
-    def _calculate_px_to_mm(self, positions):
-        mm_center_point = (self.camera_position[0], self.camera_position[1]) 
+    def calculate_px_to_mm(self, positions, center_point):
+        mm_center_point = (center_point[0], center_point[1])
         px_center_point = (positions[mm_center_point][0], positions[mm_center_point][1])
 
         px_mm_calibs = []
@@ -485,13 +442,60 @@ class CVToolheadCalibration:
                 continue
             position = positions[key]
 
-            px_distance = self._get_distance((position[0], position[1]), px_center_point)
-            mm_distance = self._get_distance((key[0], key[1]), mm_center_point)
+            px_distance = self.get_distance((position[0], position[1]), px_center_point)
+            mm_distance = self.get_distance((key[0], key[1]), mm_center_point)
 
             px_mm_calibs.append((px_distance / mm_distance))
 
         avg = (sum(px_mm_calibs)/len(px_mm_calibs))
         return avg
+
+    def get_distance(self, p1, p2):
+        return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
+
+    def get_center_point_deviation(self, positions): 
+        center_min = np.min(positions, axis=0)
+        center_max = np.max(positions, axis=0)
+        return (center_max[0]-center_min[0], center_max[1]-center_min[1])
+
+    def positions_dict_to_string(self, dictionary):
+        string = ""
+        for key, value in dictionary.items():
+            string += f"X{key[0]} Y{key[1]}:\n"
+            for val in value:
+                string += f"  X{val[0]} Y{val[1]} r{val[2]}\n"
+        return string
+
+    def get_edge_point(self, positions, edge):
+        points_np = np.array(list(positions.keys()))
+        if edge == 'left':
+            min_x = np.min(points_np[:,0])
+            y_median = np.median(points_np[:,1])
+            return (min_x, y_median)
+        if edge == 'right':
+            max_x = np.max(points_np[:,0])
+            y_median = np.median(points_np[:,1])
+            return (max_x, y_median)
+        if edge == 'top':
+            x_median = np.median(points_np[:,0])
+            max_y = np.max(points_np[:,1])
+            return (x_median, max_y)
+        if edge == 'bottom':
+            x_median = np.median(points_np[:,0])
+            min_y = np.min(points_np[:,1])
+            return (x_median, min_y)
+        return None
+
+    def angle(self, a, b):
+        return math.atan2(b[1] - a[1], b[0] - a[0])
+
+    def rotate_around_origin(self, origin, point, angle):
+        ox, oy = origin
+        px, py = point
+
+        qx = ox + math.cos(angle) * (px - ox) - math.sin(angle) * (py - oy)
+        qy = oy + math.sin(angle) * (px - ox) + math.cos(angle) * (py - oy)
+        return qx, qy
 
 class MjpegStreamReader:
     def __init__(self, camera_address):
