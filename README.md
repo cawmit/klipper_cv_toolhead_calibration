@@ -26,10 +26,20 @@ be ready to hit 'emergency stop' at any time!
 
 ## How to install
 
-### Using Moonraker Update Manager 
+Connect to your klipper machine using SSH, run these commands
 
 ```
-[update_manager client cv_toolhead_calibration]
+cd ~/
+git clone https://github.com/cawmit/klipper_cv_toolhead_calibration.git
+bash ~/klipper_cv_toolhead_calibration/install.sh
+```
+
+This will clone the repository and execute the install script.
+
+To enable automatic updates using moonraker, add the following to your moonraker config:
+
+```
+[update_manager cv_toolhead_calibration]
 type: git_repo
 path: ~/klipper_cv_toolhead_calibration
 origin: https://github.com/cawmit/klipper_cv_toolhead_calibration.git
@@ -37,27 +47,6 @@ install_script: install.sh
 requirements: requirements.txt
 managed_services: klipper
 ```
-
-This requires this repository to be cloned into your home directory (e.g. /home/pi):
-
-```
-git clone https://github.com/cawmit/klipper_cv_toolhead_calibration.git
-```
-
-The install script assumes that Klipper is also installed in your home directory under "klipper": `${HOME}/klipper`.
-
-
-### Manual install
-
-In your klippy python environment using pip install the following packages:
- - `sudo apt-get install python-opencv`
- - `pip install opencv-python`
- - `pip install numpy`
- - `pip install requests`
- - Symlink or copy the `cv_toolhead_calibration.py` file to your `klipper/klippy/extras` directory
- - Restart klipper
-
-After installing dependencies, copy and paste the `cv_nozzle_align.py` file to your klipper installation in the `klipper/klippy/extras/` folder
 
 ## Configuration
 
