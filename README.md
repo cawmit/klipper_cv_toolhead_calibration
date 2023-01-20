@@ -38,6 +38,15 @@ requirements: requirements.txt
 managed_services: klipper
 ```
 
+This requires this repository to be cloned into your home directory (e.g. /home/pi):
+
+```
+git clone https://github.com/cawmit/klipper_cv_toolhead_calibration.git
+```
+
+The install script assumes that Klipper is also installed in your home directory under "klipper": `${HOME}/klipper`.
+
+
 ### Manual install
 
 In your klippy python environment using pip install the following packages:
