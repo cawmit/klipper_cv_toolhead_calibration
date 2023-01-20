@@ -3,15 +3,12 @@
 KLIPPER_PATH="${HOME}/klipper"
 EXTENSION_PATH="${HOME}/klipper_cv_toolhead_calibration"
 
+PKGLIST="python-opencv"
+
 link_extension()
 {
     echo "Linking extension to Klipper..."
     ln -sf "${EXTENSION_PATH}/cv_toolhead_calibration.py" "${KLIPPER_PATH}/klippy/extras/cv_toolhead_calibration.py"
-}
-
-verify_opencv_installed()
-{
-    sudo apt-get install -y python-opencv
 }
 
 restart_klipper()
@@ -39,6 +36,5 @@ while getopts "k:" arg; do
 done
 
 verify_ready
-verify_opencv_installed
 link_extension
 restart_klipper
