@@ -251,8 +251,8 @@ class CVToolheadCalibration:
         top_point = self.cv_tools.get_edge_point(positions, 'top')
         bottom_point = self.cv_tools.get_edge_point(positions, 'bottom')
 
-        x_rads = self.cv_tools.angle(avg_points[left_point], avg_points[right_point])
-        y_rads = self.cv_tools.angle(avg_points[top_point], avg_points[bottom_point])
+        x_rads = self.cv_tools.get_angle_between_points(avg_points[left_point], avg_points[right_point])
+        y_rads = self.cv_tools.get_angle_between_points(avg_points[top_point], avg_points[bottom_point])
             
         gcmd.respond_info("""
             Calibration results:
@@ -468,26 +468,32 @@ class CVTools:
 
     def get_edge_point(self, positions, edge):
         points_np = np.array(list(positions.keys()))
+        
+        x_median = np.median(points_np[:,0])
+        y_median = np.median(points_np[:,1])
         if edge == 'left':
             min_x = np.min(points_np[:,0])
-            y_median = np.median(points_np[:,1])
             return (min_x, y_median)
         if edge == 'right':
             max_x = np.max(points_np[:,0])
-            y_median = np.median(points_np[:,1])
             return (max_x, y_median)
         if edge == 'top':
-            x_median = np.median(points_np[:,0])
-            max_y = np.max(points_np[:,1])
-            return (x_median, max_y)
-        if edge == 'bottom':
-            x_median = np.median(points_np[:,0])
             min_y = np.min(points_np[:,1])
             return (x_median, min_y)
+        if edge == 'bottom':
+            max_y = np.max(points_np[:,1])
+            return (x_median, max_y)
+        if edge == 'center':
+            return (x_median, y_median)
         return None
 
-    def angle(self, a, b):
+    def get_angle_between_points(self, a, b):
         return math.atan2(b[1] - a[1], b[0] - a[0])
+    
+    def get_desired_angle_offset(self, position_a, position_b, desired_points):
+        radians = self.get_angle_between_points(position_a, position_b)
+        desired_radians = self.get_angle_between_points(desired_points[position_a], desired_points[position_b])
+        return (radians-desired_radians)
 
     def rotate_around_origin(self, origin, point, angle):
         ox, oy = origin
