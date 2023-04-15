@@ -1,12 +1,9 @@
-import logging
 import time
 import cv2
 import numpy as np
 import math
-import urllib.request
-import urllib.error
-from urllib.error import URLError, HTTPError
 import requests
+from requests.exceptions import InvalidURL, HTTPError, RequestException, ConnectionError
 
 class CVToolheadCalibration:
     def __init__(self, config):
@@ -24,13 +21,15 @@ class CVToolheadCalibration:
         if not config.has_section('dual_carriage'):
             raise self.printer.config_error("No dual carriage section found in config, CVNozzleCalib wont work")
 
-        self.streamer = MjpegStreamReader(self.camera_address) 
+        self.streamer = MjpegStreamReader(self.camera_address)
         # TODO: Move to printer connect event
-        # if self.streamer.can_read_stream(self.printer) is False:
+        # if not self.streamer.can_read_stream(self.printer):
         #     raise self.printer.config_error("Could not read configured stream url %s" % (self.camera_address))
 
+        self.cv_tools = CVTools()
+
         # TODO: Parameterize detector
-        self.detector = self._create_detector()
+        self.detector = self.cv_tools._create_detector()
 
         self.gcode = self.printer.lookup_object('gcode')
 
@@ -74,59 +73,52 @@ class CVToolheadCalibration:
         positions = self.calibrate_toolhead_movement(skip_center, calib_value, calib_iterations)
 
         # avg_positions would be {(klipper_x_in_mm, klipper_y_in_mm): (cv_pixel_x_in_px, cv_pixel_y_in_px), {...}, ...}
-        avg_points = self._get_average_positions(positions)
+        avg_points = self.cv_tools.get_average_positions(positions)
 
         # Get px/mm from averages
-        px_mm = self._calculate_px_to_mm(avg_points)
+        px_mm = self.cv_tools.calculate_px_to_mm(avg_points, self.camera_position)
 
-        left_point = self._get_edge_point(positions, 'left')
-        bottom_point = self._get_edge_point(positions, 'bottom')
+        top_point = self.cv_tools.get_edge_point(positions, 'top')
+        center_point = self.cv_tools.get_edge_point(positions, 'center')
 
-        center_point = self.camera_position
-        x_rads_desired = self._angle(left_point, center_point)
-        x_rads = self._angle(avg_points[left_point], avg_points[center_point])
-        y_rads_desired = self._angle(bottom_point, center_point)
-        y_rads = self._angle(avg_points[bottom_point], avg_points[center_point])
+        point_ideal_top = (
+            int(avg_points[center_point][0]), 
+            0
+        )
+        point_center = (
+            int(avg_points[center_point][0]), 
+            int(avg_points[center_point][1])
+        )
+        point_top = (
+            int(avg_points[top_point][0]), 
+            int(avg_points[top_point][1])
+        )
 
-        x_rads_calc = (x_rads_desired-x_rads)
-        y_rads_calc = (y_rads_desired-y_rads)
-        rads_calc = (x_rads_calc+y_rads_calc)/2
-  
-        # gcmd.respond_info("""
-        #     x_rads_calc %.3f
-        #     x_rads_desired  %.3f
-        #     y_rads_calc %.3f
-        #     y_rads_desired %.3f
-        #     Rads calced to %.3f
-        # """ % (
-        #     x_rads_calc,
-        #     x_rads_desired,
-        #     y_rads_calc,
-        #     y_rads_desired,
-        #     rads_calc
-        # ))
+        slope1 = self.cv_tools.slope(point_center, point_ideal_top)
+        slope2 = self.cv_tools.slope(point_center, point_top)
 
-        center_deviation = self._get_center_point_deviation(positions[center_point])
+        ang = self.cv_tools.angle(slope1, slope2)
+
+        if point_center[1] < point_top[1]: 
+            ang += 180
+
+        rads = math.radians(ang)
+
+        center_deviation = self.cv_tools.get_center_point_deviation(positions[center_point])
         gcmd.respond_info("""
             T0 calibration
             Center point: (%.2f,%.2f)
             Calibration accuracy: X%dpx Y%dpx
             px/mm: %.4f
-            Rads %.4f
+            Camera rotation %.2f
         """ % (
             avg_points[center_point][0], 
             avg_points[center_point][1], 
             center_deviation[0], 
             center_deviation[1], 
             px_mm, 
-            rads_calc
+            ang
         ))
-
-        rotation_threshold = 0.1
-        if abs(rads_calc) > rotation_threshold:
-            gcmd.respond_info("Camera rotation is too big at %.2f degrees. Rotate the camera to be at least within %.2f deg" % (math.degrees(rads_calc), math.degrees(rotation_threshold)))
-            self.streamer.close_stream()
-            return
 
         toolhead = self.printer.lookup_object('toolhead')
 
@@ -152,37 +144,18 @@ class CVToolheadCalibration:
             self.streamer.close_stream()
             return
 
+        t1_pos = (int(t1_nozzle_pos[0]), int(t1_nozzle_pos[1]))
+        t1_rotated = self.cv_tools.rotate_around_origin(avg_points[center_point], t1_pos, -rads)
+
         # TODO: If t1_nozzle_pos nozzle radius differs a lot from T0 nozzle radius there will be issues
 
         # Calculate the X and Y offsets
-        x_offset_px = (t1_nozzle_pos[0]-t0_nozzle_pos[0])
-        y_offset_px = (t1_nozzle_pos[1]-t0_nozzle_pos[1])
+        x_offset_px = t0_nozzle_pos[0]-t1_rotated[0]
+        y_offset_px = t0_nozzle_pos[1]-t1_rotated[1]
 
         # Convert the px offset values to real world mm
         x_offset_mm = x_offset_px/px_mm
         y_offset_mm = y_offset_px/px_mm
-
-        # TODO: Simply try to use this same position with px values instead of the current calculated mm values? potentionally reduces chance of error
-        rotated_offsets = self.rotate_around_origin(center_point, [center_point[0]+x_offset_mm, center_point[1]+y_offset_mm], rads_calc)
-
-        x_offset_mm_rotated = rotated_offsets[0]-center_point[0]
-        y_offset_mm_rotated = rotated_offsets[1]-center_point[1]
-        
-        # TODO: Figure out why the angles sometimes 180 degrees off...
-        # TODO: It works but im not happy with this if statement, 
-        # TODO: its not a true solution, just a patch that seems to work
-        # TODO: and most likely eventually will cause issues for someone 
-        # TODO: and that will be hard to debug then
-        if abs(x_rads_calc) > math.pi/2 and abs(y_rads_calc) > math.pi:
-            # gcmd.respond_info("Applying extra rotation...")
-            x_offset_mm_rotated = -x_offset_mm_rotated
-            y_offset_mm_rotated = -y_offset_mm_rotated
-
-        # gcmd.respond_info("""
-        #     Pre rotation mm offsets X %.3f Y %.3f
-        #     After rotation mm offsets X %.3f Y %.3f
-        # """ % (x_offset_mm, y_offset_mm, x_offset_mm_rotated, y_offset_mm_rotated) 
-        # )
 
         # TODO: Add early return if movement is bigger then some we can assume is outside of the cameras vision
         new_pos_t1 = toolhead.get_position()
@@ -233,32 +206,50 @@ class CVToolheadCalibration:
         # Get positions from the calibration function
         positions = self.calibrate_toolhead_movement(skip_center, calib_value, calib_iterations)
 
+        # avg_positions would be {(klipper_x_in_mm, klipper_y_in_mm): (cv_pixel_x_in_px, cv_pixel_y_in_px), {...}, ...}
+        avg_points = self.cv_tools.get_average_positions(positions)
+
+        # Get px/mm from averages
+        px_mm = self.cv_tools.calculate_px_to_mm(avg_points, self.camera_position)
+
+        top_point = self.cv_tools.get_edge_point(positions, 'top')
+        center_point = self.cv_tools.get_edge_point(positions, 'center')
+
+        point_ideal_top = (
+            int(avg_points[center_point][0]), 
+            0
+        )
+        point_center = (
+            int(avg_points[center_point][0]), 
+            int(avg_points[center_point][1])
+        )
+        point_top = (
+            int(avg_points[top_point][0]), 
+            int(avg_points[top_point][1])
+        )
+
+        slope1 = self.cv_tools.slope(point_center, point_ideal_top)
+        slope2 = self.cv_tools.slope(point_center, point_top)
+
+        ang = self.cv_tools.angle(slope1, slope2)
+
+        if point_center[1] < point_top[1]: 
+            ang += 180
+
         print_positions = gcmd.get('PRINT_POSITIONS', False)
         if print_positions != False:
-            debug_string = self._positions_dict_to_string(positions)
+            debug_string = self.cv_tools.positions_dict_to_string(positions)
             gcmd.respond_info(debug_string)
 
-        # avg_positions would be {(klipper_x_in_mm, klipper_y_in_mm): (cv_pixel_x_in_px, cv_pixel_y_in_px), ...}
-        avg_points = self._get_average_positions(positions)
-
-        px_mm = self._calculate_px_to_mm(avg_points)
-
-        center_deviation = self._get_center_point_deviation(positions[self.camera_position])
-        left_point = self._get_edge_point(positions, 'left')
-        right_point = self._get_edge_point(positions, 'right')
-        top_point = self._get_edge_point(positions, 'top')
-        bottom_point = self._get_edge_point(positions, 'bottom')
-
-        x_rads = self._angle(avg_points[left_point], avg_points[right_point])
-        y_rads = self._angle(avg_points[top_point], avg_points[bottom_point])
+        center_deviation = self.cv_tools.get_center_point_deviation(positions[self.camera_position])
             
         gcmd.respond_info("""
             Calibration results:
             Center point: (%.2f,%.2f)
             Deviation: X%dpx Y%dpx
             px/mm: %.4f
-            Rads x%.4f y%.4f
-        """ % (avg_points[self.camera_position][0], avg_points[self.camera_position][1], center_deviation[0], center_deviation[1], px_mm, x_rads, y_rads))
+            Camera rotation %.4f
+        """ % (avg_points[self.camera_position][0], avg_points[self.camera_position][1], center_deviation[0], center_deviation[1], px_mm, ang))
 
         self.streamer.close_stream()
 
@@ -287,7 +278,7 @@ class CVToolheadCalibration:
         positions = {}
 
         # Itterations is most likely not needed for the same reason as mentioned for calib_points
-        for x in range(iterations):
+        for _ in range(iterations):
             for calib_point in calib_points:
                 # Go to calib point and get a position
                 new_pos = toolhead.get_position()
@@ -295,7 +286,7 @@ class CVToolheadCalibration:
                 new_pos[1] = calib_point[1]
                 toolhead.move(new_pos, self.speed)
                 toolhead.wait_moves()
-                
+
                 nozzle_pos = self._recursively_find_nozzle_position()
                 if nozzle_pos:
                     positions.setdefault(calib_point,[]).append(nozzle_pos)
@@ -308,21 +299,21 @@ class CVToolheadCalibration:
                 new_pos[1] = start_y
                 toolhead.move(new_pos, self.speed)
                 toolhead.wait_moves()
-                
+
                 nozzle_pos = self._recursively_find_nozzle_position()
                 if nozzle_pos:
                     positions.setdefault((start_x, start_y),[]).append(nozzle_pos)
-        
+
         return positions
 
-    def t0(self): 
+    def t0(self):
         dc = self.printer.lookup_object('dual_carriage')
         status = dc.get_status()
         if status['active_carriage'] != 'CARRIAGE_0':
             self.gcode.run_script_from_command('ACTIVATE_EXTRUDER EXTRUDER=extruder')
             self.gcode.run_script_from_command('SET_DUAL_CARRIAGE CARRIAGE=0')
 
-    def t1(self): 
+    def t1(self):
         dc = self.printer.lookup_object('dual_carriage')
         status = dc.get_status()
         if status['active_carriage'] != 'CARRIAGE_1':
@@ -357,21 +348,21 @@ class CVToolheadCalibration:
             toolhead.move(center_pos, self.speed)
             toolhead.wait_moves()
 
-    def _find_nozzle_positions(self): 
+    def _find_nozzle_positions(self):
         image = self.streamer.get_single_frame()
         if image is None:
             return None
-        return self._detect_nozzles(image)
+        return self.cv_tools.detect_nozzles(image)
 
     def _recursively_find_nozzle_position(self):
         start_time = time.time()  # Get the current time
-        
+
         CV_TIME_OUT = 5 # If no nozzle found in this time, timeout the function
         CV_MIN_MATCHES = 5 # Minimum amount of matches to confirm toolhead position after a move
 
-        last_pos = None
+        last_pos = (0,0)
         pos_matches = 0
-        while (time.time() - start_time < CV_TIME_OUT):
+        while time.time() - start_time < CV_TIME_OUT:
             positions = self._find_nozzle_positions()
             if not positions:
                 continue
@@ -389,8 +380,84 @@ class CVToolheadCalibration:
             last_pos = pos
         return None
 
+class CVTools:
+    def __init__(self):
+        self.detector = self._create_detector()
+
+    def get_average_positions(self, positions):
+        avg_positions = {}
+        for position in positions:
+            mm_positions = positions[position]
+            transposed = zip(*mm_positions)
+            averages = [np.mean(col) for col in transposed]
+            avg_positions[position] = averages
+        return avg_positions
+
+    def calculate_px_to_mm(self, positions, center_point):
+        mm_center_point = (center_point[0], center_point[1])
+        px_center_point = (positions[mm_center_point][0], positions[mm_center_point][1])
+
+        px_mm_calibs = []
+        for key in positions:
+            if key == mm_center_point:
+                continue
+            position = positions[key]
+
+            px_distance = self.get_distance((position[0], position[1]), px_center_point)
+            mm_distance = self.get_distance((key[0], key[1]), mm_center_point)
+
+            px_mm_calibs.append((px_distance / mm_distance))
+
+        avg = (sum(px_mm_calibs)/len(px_mm_calibs))
+        return avg
+
+    def get_distance(self, p1, p2):
+        return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
+
+    def get_center_point_deviation(self, positions):
+        center_min = np.min(positions, axis=0)
+        center_max = np.max(positions, axis=0)
+        return (center_max[0]-center_min[0], center_max[1]-center_min[1])
+
+    def positions_dict_to_string(self, dictionary):
+        string = ""
+        for key, value in dictionary.items():
+            string += f"X{key[0]} Y{key[1]}:\n"
+            for val in value:
+                string += f"  X{val[0]} Y{val[1]} r{val[2]}\n"
+        return string
+
+    def get_edge_point(self, positions, edge):
+        points_np = np.array(list(positions.keys()))
+
+        x_median = np.median(points_np[:,0])
+        y_median = np.median(points_np[:,1])
+        if edge == 'left':
+            min_x = np.min(points_np[:,0])
+            return (min_x, y_median)
+        if edge == 'right':
+            max_x = np.max(points_np[:,0])
+            return (max_x, y_median)
+        if edge == 'top':
+            min_y = np.min(points_np[:,1])
+            return (x_median, min_y)
+        if edge == 'bottom':
+            max_y = np.max(points_np[:,1])
+            return (x_median, max_y)
+        if edge == 'center':
+            return (x_median, y_median)
+        return None
+
+    def rotate_around_origin(self, origin, point, angle):
+        ox, oy = (int(origin[0]), int(origin[1]))
+        px, py = (int(point[0]), int(point[1]))
+
+        qx = ox + math.cos(angle) * (px - ox) - math.sin(angle) * (py - oy)
+        qy = oy + math.sin(angle) * (px - ox) + math.cos(angle) * (py - oy)
+        return qx, qy
+    
     # Taken straight from TAMV: https://github.com/DanalEstes/TAMV/blob/master/TAMV.py#L149
-    def _create_detector(self, t1=20, t2=200, all=0.5, area=200):
+    def _create_detector(self, t1=5, t2=250, all=0.5, area=100):
         params = cv2.SimpleBlobDetector_Params()
         params.minThreshold = t1
         params.maxThreshold = t2
@@ -403,9 +470,9 @@ class CVToolheadCalibration:
         params.filterByInertia = True
         params.minInertiaRatio = all
         detector = cv2.SimpleBlobDetector_create(params)
-        return (detector)
+        return detector
 
-    def _detect_nozzles(self, image):
+    def detect_nozzles(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         keypoints = self.detector.detect(gray)
@@ -417,126 +484,65 @@ class CVToolheadCalibration:
             pos = np.around(point.pt)
             r = np.around(point.size/2) # Radius of the detected nozzle
             data.append((pos[0], pos[1], r))
-        
+
         return data
 
-    def _get_center_point_deviation(self, positions): 
-        center_min = np.min(positions, axis=0)
-        center_max = np.max(positions, axis=0)
-        return (center_max[0]-center_min[0], center_max[1]-center_min[1])
+    def slope(self, p1, p2):
+        a1 = p2[1]-p1[1]
+        a2 = p2[0]-p1[0]
+        if a1 == 0:
+            return a2
+        if a2 == 0:
+            return a1
+        return a1/a2
 
-    def _positions_dict_to_string(self, dictionary):
-        string = ""
-        for key, value in dictionary.items():
-            string += f"X{key[0]} Y{key[1]}:\n"
-            for val in value:
-                string += f"  X{val[0]} Y{val[1]} r{val[2]}\n"
-        return string
-
-    def _get_average_positions(self, positions):
-        avg_positions = {}
-        for position in positions:
-            mm_positions = positions[position]
-            transposed = zip(*mm_positions)
-            averages = [np.mean(col) for col in transposed]
-            avg_positions[position] = averages
-        return avg_positions
-
-    def _get_distance(self, p1, p2):
-        return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
-
-    def _get_edge_point(self, positions, edge):
-        points_np = np.array(list(positions.keys()))
-        if edge == 'left':
-            min_x = np.min(points_np[:,0])
-            y_median = np.median(points_np[:,1])
-            return (min_x, y_median)
-        elif edge == 'right':
-            max_x = np.max(points_np[:,0])
-            y_median = np.median(points_np[:,1])
-            return (max_x, y_median)
-        elif edge == 'top':
-            x_median = np.median(points_np[:,0])
-            max_y = np.max(points_np[:,1])
-            return (x_median, max_y)
-        elif edge == 'bottom':
-            x_median = np.median(points_np[:,0])
-            min_y = np.min(points_np[:,1])
-            return (x_median, min_y)
-
-    def _angle(self, a, b):
-      return math.atan2(b[1] - a[1], b[0] - a[0])
-    
-    def rotate_around_origin(self, origin, point, angle):
-        ox, oy = origin
-        px, py = point
-
-        qx = ox + math.cos(angle) * (px - ox) - math.sin(angle) * (py - oy)
-        qy = oy + math.sin(angle) * (px - ox) + math.cos(angle) * (py - oy)
-        return qx, qy
-
-    def _calculate_px_to_mm(self, positions):
-        mm_center_point = (self.camera_position[0], self.camera_position[1]) 
-        px_center_point = (positions[mm_center_point][0], positions[mm_center_point][1])
-
-        px_mm_calibs = []
-        for key in positions:
-            if key == mm_center_point:
-                continue
-            position = positions[key]
-
-            px_distance = self._get_distance((position[0], position[1]), px_center_point)
-            mm_distance = self._get_distance((key[0], key[1]), mm_center_point)
-
-            px_mm_calibs.append((px_distance / mm_distance))
-
-        avg = (sum(px_mm_calibs)/len(px_mm_calibs))
-        return avg
+    def angle(self,  s1, s2):
+        return math.degrees(math.atan((s2-s1)/(1+(s2*s1))))
 
 class MjpegStreamReader:
     def __init__(self, camera_address):
         self.camera_address = camera_address
-        self.stream = None
-    
+        self.session = requests.Session()
+
     def can_read_stream(self, printer):
         # TODO: Clean this up and return actual errors instead of this...stuff...
         try:
-            response = urllib.request.urlopen(self.camera_address)
-        except HTTPError as e:
-            raise printer.config_error("Could not read nozzle camera address, got HTTPError %f" % (e.code))
-        except URLError as e:
-            raise printer.config_error("Could not read nozzle camera address, got HTTPError %s" % (e.reason))
-        else:
-            response.close()
-            return True
-    
+            with self.session.get(self.camera_address) as _:
+                return True
+        except InvalidURL as _:
+            raise printer.config_error("Could not read nozzle camera address, got InvalidURL error %s" % (self.camera_address))
+        except ConnectionError as _:
+            raise printer.config_error("Failed to establish connection with nozzle camera %s" % (self.camera_address))
+        except Exception as e:
+            raise printer.config_error("Nozzle camera request failed %s" % str(e))
+
     def open_stream(self):
         # TODO: Raise error, stream already running 
-        self.stream = urllib.request.urlopen(self.camera_address)
+        self.session = requests.Session()
 
     def get_single_frame(self):
-        if self.stream is None: 
+        if self.session is None: 
             # TODO: Raise error: stream is not running
             return None
 
-        stream = requests.get(self.camera_address, stream=True)
-        if stream.ok:
-            chunk_size = 1024
-            bytes_ = b''
-            for chunk in stream.iter_content(chunk_size=chunk_size):
-                bytes_ += chunk
-                a = bytes_.find(b'\xff\xd8')
-                b = bytes_.find(b'\xff\xd9')
-                if a != -1 and b != -1:
-                    jpg = bytes_[a:b+2]
-                    return cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        with self.session.get(self.camera_address, stream=True) as stream:
+            if stream.ok:
+                chunk_size = 1024
+                bytes_ = b''
+                for chunk in stream.iter_content(chunk_size=chunk_size):
+                    bytes_ += chunk
+                    a = bytes_.find(b'\xff\xd8')
+                    b = bytes_.find(b'\xff\xd9')
+                    if a != -1 and b != -1:
+                        jpg = bytes_[a:b+2]
+                        return cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
 
         return None
-    
+
     def close_stream(self):
-        if self.stream is not None:
-            self.stream.close()
-        self.stream = None
+        if self.session is not None:
+            self.session.close()
+            self.session = None
 
 def load_config(config):
     return CVToolheadCalibration(config)
