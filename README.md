@@ -4,8 +4,8 @@ CVToolheadCalibration is an extension for IDEX printers running klipper that add
 
 Adds the following commands to klipper:
   - `CV_TEST`, debug command to check if the script works and OpenCV versions
-  - `CV_CENTER_TOOLHEAD`, moves the current toolhead to the configured center_point
-  - `CV_SIMPLE_NOZZLE_POSITION`, only checks if a nozzle is detected in the current nozzle cam
+  - `CV_CENTER_TOOLHEAD`, moves the current toolhead to the configured camera_position
+  - `CV_SIMPLE_NOZZLE_POSITION`, checks if a nozzle is detected in the current nozzle cam image
   - `CV_CALIB_NOZZLE_PX_MM`, moves the current active toolhead to various positions around the center to calibrate movement data
   - `CV_CALIB_OFFSET`, The main function, runs the calibration function on the T0 toolhead, then switches to T1, calibrates the offset and moves T1 there to compare
 
@@ -13,9 +13,6 @@ Both of the calibration commands have optional command line parameters
   - CALIB_VALUE=0.5, override the default or configured CALIB_VALUE value
   - CALIB_ITERATIONS=5, override the default or configured CALIB_ITERATIONS value
   - PRINT_POSITIONS=1, only for CV_CALIB_NOZZLE_PX_MM, returns the raw MM and PX values of detections used for calibration
-
-Known issues: 
-  - Camera needs to be physically correctly orriented
 
 !!! !!! !!! !!! !!! 
 This is alpha software and only meant for advanced users!

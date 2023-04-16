@@ -22,14 +22,8 @@ class CVToolheadCalibration:
             raise self.printer.config_error("No dual carriage section found in config, CVNozzleCalib wont work")
 
         self.streamer = MjpegStreamReader(self.camera_address)
-        # TODO: Move to printer connect event
-        # if not self.streamer.can_read_stream(self.printer):
-        #     raise self.printer.config_error("Could not read configured stream url %s" % (self.camera_address))
 
         self.cv_tools = CVTools()
-
-        # TODO: Parameterize detector
-        self.detector = self.cv_tools._create_detector()
 
         self.gcode = self.printer.lookup_object('gcode')
 
@@ -38,6 +32,12 @@ class CVToolheadCalibration:
         self.gcode.register_command('CV_SIMPLE_NOZZLE_POSITION', self.cmd_SIMPLE_NOZZLE_POSITION, desc=self.cmd_SIMPLE_NOZZLE_POSITION_help)
         self.gcode.register_command('CV_CALIB_NOZZLE_PX_MM', self.cmd_CALIB_NOZZLE_PX_MM, desc=self.cmd_CALIB_NOZZLE_PX_MM_help)
         self.gcode.register_command('CV_CALIB_OFFSET', self.cmd_CALIB_OFFSET, desc=self.cmd_CALIB_OFFSET_help)
+        
+        self.printer.register_event_handler("klippy:connect", self.handle_connect)
+
+    def handle_connect(self):
+        if not self.streamer.can_read_stream(self.printer):
+            raise self.printer.config_error("Could not read configured stream url %s" % (self.camera_address))
 
     cmd_SIMPLE_TEST_help = "Tests if the CVNozzleCalib extension works"
     def cmd_SIMPLE_TEST(self, gcmd):
@@ -112,11 +112,11 @@ class CVToolheadCalibration:
             px/mm: %.4f
             Camera rotation %.2f
         """ % (
-            avg_points[center_point][0], 
-            avg_points[center_point][1], 
-            center_deviation[0], 
-            center_deviation[1], 
-            px_mm, 
+            avg_points[center_point][0],
+            avg_points[center_point][1],
+            center_deviation[0],
+            center_deviation[1],
+            px_mm,
             ang
         ))
 
@@ -173,8 +173,6 @@ class CVToolheadCalibration:
             return
 
         # TODO: Add early return if resulting virtual offset is not within spec
-        # (t0_nozzle_pos[0]-second_t1_pos[0]),
-        # (t0_nozzle_pos[1]-second_t1_pos[1])
 
         gcmd.respond_info("""
             Done calibrating! 
@@ -297,7 +295,7 @@ class CVToolheadCalibration:
                 new_pos = toolhead.get_position()
                 new_pos[0] = start_x
                 new_pos[1] = start_y
-                toolhead.move(new_pos, self.speed)
+                toolhead.manual_move(new_pos, self.speed)
                 toolhead.wait_moves()
 
                 nozzle_pos = self._recursively_find_nozzle_position()
@@ -307,18 +305,10 @@ class CVToolheadCalibration:
         return positions
 
     def t0(self):
-        dc = self.printer.lookup_object('dual_carriage')
-        status = dc.get_status()
-        if status['active_carriage'] != 'CARRIAGE_0':
-            self.gcode.run_script_from_command('ACTIVATE_EXTRUDER EXTRUDER=extruder')
-            self.gcode.run_script_from_command('SET_DUAL_CARRIAGE CARRIAGE=0')
+        self.gcode.run_script_from_command('T0')
 
     def t1(self):
-        dc = self.printer.lookup_object('dual_carriage')
-        status = dc.get_status()
-        if status['active_carriage'] != 'CARRIAGE_1':
-            self.gcode.run_script_from_command('ACTIVATE_EXTRUDER EXTRUDER=extruder1')
-            self.gcode.run_script_from_command('SET_DUAL_CARRIAGE CARRIAGE=1')
+        self.gcode.run_script_from_command('T1')
 
     def _x_home_current_toolhead(self):
         toolhead = self.printer.lookup_object('toolhead')
@@ -358,7 +348,7 @@ class CVToolheadCalibration:
         start_time = time.time()  # Get the current time
 
         CV_TIME_OUT = 5 # If no nozzle found in this time, timeout the function
-        CV_MIN_MATCHES = 5 # Minimum amount of matches to confirm toolhead position after a move
+        CV_MIN_MATCHES = 3 # Minimum amount of matches to confirm toolhead position after a move
 
         last_pos = (0,0)
         pos_matches = 0
@@ -457,25 +447,36 @@ class CVTools:
         return qx, qy
     
     # Taken straight from TAMV: https://github.com/DanalEstes/TAMV/blob/master/TAMV.py#L149
-    def _create_detector(self, t1=5, t2=250, all=0.5, area=100):
+    def _create_detector(self, t1=20, t2=200, all=0.5, area=200):
         params = cv2.SimpleBlobDetector_Params()
+        
         params.minThreshold = t1
         params.maxThreshold = t2
+        
         params.filterByArea = True
         params.minArea = area
+        
         params.filterByCircularity = True
         params.minCircularity = all
+        
         params.filterByConvexity = True
         params.minConvexity = all
+        
         params.filterByInertia = True
         params.minInertiaRatio = all
+        
+        params.filterByColor = False
+
+        params.minDistBetweenBlobs = 2
+        
         detector = cv2.SimpleBlobDetector_create(params)
         return detector
 
     def detect_nozzles(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blur = cv2.medianBlur(gray, 5)
 
-        keypoints = self.detector.detect(gray)
+        keypoints = self.detector.detect(blur)
         if len(keypoints) < 1:
             return None
 
