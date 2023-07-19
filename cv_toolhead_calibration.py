@@ -33,11 +33,11 @@ class CVToolheadCalibration:
         self.gcode.register_command('CV_CALIB_NOZZLE_PX_MM', self.cmd_CALIB_NOZZLE_PX_MM, desc=self.cmd_CALIB_NOZZLE_PX_MM_help)
         self.gcode.register_command('CV_CALIB_OFFSET', self.cmd_CALIB_OFFSET, desc=self.cmd_CALIB_OFFSET_help)
         
-        self.printer.register_event_handler("klippy:connect", self.handle_connect)
+        # self.printer.register_event_handler("klippy:connect", self.handle_connect)
 
-    def handle_connect(self):
-        if not self.streamer.can_read_stream(self.printer):
-            raise self.printer.config_error("Could not read configured stream url %s" % (self.camera_address))
+    # def handle_connect(self):
+    #     if not self.streamer.can_read_stream(self.printer):
+    #         raise self.printer.config_error("Could not read configured stream url %s" % (self.camera_address))
 
     cmd_SIMPLE_TEST_help = "Tests if the CVNozzleCalib extension works"
     def cmd_SIMPLE_TEST(self, gcmd):
