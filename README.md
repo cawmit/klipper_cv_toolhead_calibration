@@ -1,3 +1,9 @@
+# This repository has been superceeded by https://github.com/TypQxQ/kTAMV 
+
+Check out https://github.com/TypQxQ/kTAMV for a morew up to date version of this Klipper extension
+
+--------------------------------------------------------------------------------------------
+
 # Automatic toolhead offset calibration using computer vision for Klipper
 
 CVToolheadCalibration is an extension for IDEX printers running klipper that adds functionality to calibrate toolhead offset using a USB microscope/webcam. With this extension you can easily calibrate the toolhead offsets. 
